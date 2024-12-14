@@ -2,7 +2,7 @@ require('dotenv').config();  // Loads variables from .env file
 const Web3 = require('web3');
 
 // Connect to Ethereum network (via Infura or another provider)
-const web3 = new Web3(new Web3.providers.HttpProvider(process.env.INFURA_URL));
+const web3 = new Web3(process.env.INFURA_URL);  // Directly pass the Infura URL here
 
 // Wallet details (compromised wallet and the new secure wallet)
 const compromisedPrivateKey = process.env.COMPROMISED_PRIVATE_KEY;
