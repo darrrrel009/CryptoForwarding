@@ -1,5 +1,5 @@
 require('dotenv').config();  // Loads variables from .env file
-const Web3 = require('web3');
+const Web3 = require('web3');  // Correct Web3 import
 
 // Connect to Ethereum network (via Infura or another provider)
 const web3 = new Web3(process.env.INFURA_URL);  // Directly pass the Infura URL here
