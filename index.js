@@ -1,68 +1,97 @@
-require('dotenv').config();  // Loads variables from .env file
-const { Web3 } = require('web3');  // Correct Web3 import for version 4.x
+require('dotenv').config();
+const Web3 = require('web3');
+const pLimit = require('p-limit');
+const rateLimit = pLimit(1);
 
-// Connect to Ethereum network (via Infura or another provider)
-const web3 = new Web3(process.env.INFURA_URL);  // Directly pass the Infura URL here
+// Environment Variables
+const INFURA_URL = process.env.INFURA_URL.replace('http', 'wss');
+const GETBLOCK_URL = process.env.GETBLOCK_URL;
+const COMPROMISED_PRIVATE_KEY = process.env.COMPROMISED_PRIVATE_KEY;
+const SECURE_WALLET = process.env.SECURE_WALLET;
 
-// Wallet details (compromised wallet and the new secure wallet)
-const compromisedPrivateKey = process.env.COMPROMISED_PRIVATE_KEY;
-const secureWalletAddress = process.env.SECURE_WALLET_ADDRESS;
+// Initialize Web3 Providers
+let currentProvider = INFURA_URL;
+const web3 = new Web3(new Web3.providers.WebsocketProvider(currentProvider));
 
-// Monitor the compromised wallet for incoming transactions
-async function monitorAndForward() {
-    const compromisedWalletAddress = web3.eth.accounts.privateKeyToAccount(compromisedPrivateKey).address;
+// Wallet Setup
+const compromisedAccount = web3.eth.accounts.privateKeyToAccount(COMPROMISED_PRIVATE_KEY);
+web3.eth.accounts.wallet.add(compromisedAccount);
 
-    console.log(`Monitoring wallet: ${compromisedWalletAddress}`);
-    
+// Utility: Switch Providers
+const switchProvider = () => {
+    currentProvider = currentProvider === INFURA_URL ? GETBLOCK_URL : INFURA_URL;
+    web3.setProvider(new Web3.providers.WebsocketProvider(currentProvider));
+    console.log(`Switched provider to: ${currentProvider}`);
+};
+
+// Monitor Pending Transactions
+const monitorTransactions = async () => {
+    console.log(`Monitoring transactions for: ${compromisedAccount.address}`);
     web3.eth.subscribe('pendingTransactions', async (error, txHash) => {
-        if (error) console.error("Error subscribing to transactions:", error);
+        if (error) {
+            console.error('Error subscribing to transactions:', error.message);
+            return;
+        }
 
         try {
             const tx = await web3.eth.getTransaction(txHash);
-            
-            // If the transaction is incoming to the compromised wallet address
-            if (tx && tx.to && tx.to.toLowerCase() === compromisedWalletAddress.toLowerCase()) {
-                console.log(`Incoming transaction detected: ${txHash}`);
+            if (!tx || tx.to !== compromisedAccount.address) return;
 
-                // Check if the transaction contains ETH (not a token transfer)
-                if (tx.value > 0) {
-                    console.log(`Forwarding ${web3.utils.fromWei(tx.value, 'ether')} ETH to secure wallet...`);
+            console.log(`Incoming transaction detected: ${txHash}`);
 
-                    // Calculate the gas cost for forwarding the ETH
-                    const gasPrice = await web3.eth.getGasPrice();
-                    const gasEstimate = await web3.eth.estimateGas({
-                        to: secureWalletAddress,
-                        from: compromisedWalletAddress,
-                        value: tx.value,
-                    });
-                    const gasCost = gasPrice * gasEstimate;
+            // Check Balance and Forward ETH
+            const balance = await web3.eth.getBalance(compromisedAccount.address);
+            const gasPrice = await web3.eth.getGasPrice();
+            const gasLimit = 21000; // Standard for ETH transfers
+            const gasCost = BigInt(gasPrice) * BigInt(gasLimit);
 
-                    // Ensure that we leave enough ETH to cover the gas fees
-                    if (web3.utils.toBN(tx.value).gt(web3.utils.toBN(gasCost))) {
-                        const amountToForward = web3.utils.toBN(tx.value).sub(web3.utils.toBN(gasCost));
-
-                        // Prepare the transaction to forward the ETH
-                        const txObject = {
-                            to: secureWalletAddress,
-                            value: amountToForward,
-                            gas: gasEstimate,
-                            gasPrice: gasPrice,
-                        };
-
-                        // Sign and send the transaction
-                        const signedTx = await web3.eth.accounts.signTransaction(txObject, compromisedPrivateKey);
-                        const sentTx = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
-                        console.log(`Transaction forwarded successfully: ${sentTx.transactionHash}`);
-                    } else {
-                        console.log("Insufficient balance to cover gas fees and transfer.");
-                    }
-                }
+            if (BigInt(balance) <= gasCost) {
+                console.log('Not enough balance to cover gas fees.');
+                return;
             }
+
+            const transferAmount = BigInt(balance) - gasCost;
+            await forwardETH(transferAmount, gasPrice, gasLimit);
         } catch (err) {
-            console.error("Error processing transaction:", err);
+            if (err.message.includes('Too Many Requests')) {
+                console.warn('Rate limit hit, switching provider...');
+                switchProvider();
+            } else {
+                console.error('Error processing transaction:', err.message);
+            }
         }
     });
-}
+};
 
-// Start monitoring the compromised wallet
-monitorAndForward();
+// Forward ETH to Secure Wallet
+const forwardETH = async (amount, gasPrice, gasLimit) => {
+    try {
+        const tx = {
+            from: compromisedAccount.address,
+            to: SECURE_WALLET,
+            value: amount.toString(),
+            gas: gasLimit,
+            gasPrice,
+        };
+
+        const signedTx = await web3.eth.accounts.signTransaction(tx, COMPROMISED_PRIVATE_KEY);
+        const receipt = await rateLimit(() => web3.eth.sendSignedTransaction(signedTx.rawTransaction));
+        console.log(`Successfully forwarded ${web3.utils.fromWei(amount.toString(), 'ether')} ETH.`);
+        console.log('Transaction receipt:', receipt);
+    } catch (err) {
+        console.error('Error forwarding ETH:', err.message);
+        if (err.message.includes('Too Many Requests')) {
+            console.warn('Rate limit hit during forward, switching provider...');
+            switchProvider();
+        }
+    }
+};
+
+// Start Monitoring
+(async () => {
+    try {
+        await monitorTransactions();
+    } catch (err) {
+        console.error('Error initializing monitoring:', err.message);
+    }
+})();
