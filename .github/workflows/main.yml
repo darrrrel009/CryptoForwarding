@@ -24,4 +24,4 @@ jobs:
         run: npm install
 
       - name: Run script
-        run: node index.js
+        run: npm start
