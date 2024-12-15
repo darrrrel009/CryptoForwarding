@@ -24,4 +24,9 @@ jobs:
         run: npm install
 
       - name: Run script
-        run: npm start
+        env:
+          INFURA_URL: ${{ secrets.INFURA_URL }}
+          GETBLOCK_URL: ${{ secrets.GETBLOCK_URL }}
+          COMPROMISED_PRIVATE_KEY: ${{ secrets.COMPROMISED_PRIVATE_KEY }}
+          SECURE_WALLET: ${{ secrets.SECURE_WALLET }}
+        run: node index.js
